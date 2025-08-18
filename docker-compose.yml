@@ -40,3 +40,35 @@ services:
       - redis
     profiles:
       - mastering_celery
+
+  high_priority_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: high_priority_worker_container
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q high_priority
+    volumes:
+      - ./app:/app
+    profiles:
+      - mastering_celery
+    depends_on:
+      - redis
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: beat_container
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    command: celery -A app.celery_app.celery_app beat --loglevel=info
+    volumes:
+      - ./app:/app
+    depends_on:
+      - redis
+    profiles:
+      - mastering_celery
