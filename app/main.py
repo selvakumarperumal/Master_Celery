@@ -3,7 +3,9 @@ from app.tasks import (
     add,
     failing_task,
     important_task,
-    long_running_task
+    long_running_task,
+    cpu_burn,
+    io_bound_task
 )
 
 app = FastAPI()
@@ -51,3 +53,13 @@ async def get_result(task_id: str):
         return {"task_id": task_id, "result": result.result}
     else:
         return {"task_id": task_id, "status": "Task is still processing"}
+    
+@app.get("/bulk/cpu")
+async def bulk_cpu_tasks(count: int = 500, n: int = 200):
+    ids = [cpu_burn.delay(n).id for _ in range(count)]
+    return {"task_ids": ids, "status": "Bulk CPU tasks submitted"}
+
+@app.get("/bulk/io")
+async def run_io_bound_task(count: int = 500, ms: int = 200):
+    ids = [io_bound_task.delay(ms).id for _ in range(count)]
+    return {"task_ids": ids, "status": "Bulk I/O tasks submitted"}

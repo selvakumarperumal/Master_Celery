@@ -1,4 +1,110 @@
+# ============================================================================
+# MASTER CELERY - Production-Ready Celery + FastAPI + Redis Architecture
+# ============================================================================
+#
+# This Docker Compose configuration sets up a comprehensive async task 
+# processing system with the following components:
+#
+# 🏗️  ARCHITECTURE OVERVIEW:
+# ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+# │   Client    │───▶│   FastAPI   │───▶│    Redis    │───▶│   Celery    │
+# │  (Browser)  │    │   Server    │    │   Broker    │    │   Workers   │
+# └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+#                                              │                    │
+#                                              │                    ▼
+#                    ┌─────────────┐           │            ┌─────────────┐
+#                    │   Flower    │───────────┤            │   Results   │
+#                    │ Monitoring  │           │            │  Storage    │
+#                    └─────────────┘           │            └─────────────┘
+#                                              │
+#                    ┌─────────────┐           │
+#                    │ Celery Beat │───────────┘
+#                    │ Scheduler   │
+#                    └─────────────┘
+#
+# 🔄 COMPONENT FLOW EXPLANATION:
+#
+# 1. CLIENT → FASTAPI:
+#    - User makes HTTP request to endpoints (/add, /important, etc.)
+#    - FastAPI receives request and validates parameters
+#    - FastAPI calls task.delay() to submit async task
+#    - Returns task_id immediately (non-blocking response)
+#
+# 2. FASTAPI → REDIS:
+#    - Task is serialized and sent to appropriate queue in Redis
+#    - Redis acts as message broker, storing tasks in queues
+#    - Queue routing determined by task_routes configuration
+#    - Task waits in queue until worker picks it up
+#
+# 3. REDIS → CELERY WORKERS:
+#    - Workers continuously poll Redis for new tasks
+#    - Tasks distributed based on queue priority and worker availability
+#    - Worker processes task in background (may take seconds/minutes)
+#    - Result stored back in Redis upon completion
+#
+# 4. BEAT → REDIS → WORKERS:
+#    - BEAT: Reads schedule from celery_app.py and sends tasks to Redis queues
+#    - REDIS: Stores scheduled tasks in queues just like regular tasks
+#    - WORKERS: Pick up scheduled tasks from queues and process them
+#    - No direct Beat-to-Worker connection - Beat is just another task producer
+#
+# 5. MONITORING & RESULTS:
+#    - FLOWER: Connects to Redis to monitor worker status and task progress
+#    - RESULTS: Stored in Redis and retrieved via FastAPI /result endpoint
+#
+# 6. RESULT RETRIEVAL:
+#    - Client queries /result/{task_id} endpoint
+#    - FastAPI checks Redis for task status and result
+#    - Returns either "processing" or actual result
+#
+# 🎯 KEY BENEFITS:
+# - Asynchronous: Non-blocking task execution
+# - Scalable: Add more workers to handle increased load
+# - Reliable: Redis persistence ensures task delivery
+# - Monitorable: Real-time visibility into system performance
+# - Flexible: Different queues for different task priorities
+#
+# 🎯 QUEUE STRATEGY:
+# - default: Regular tasks (add, failing_task, long_running_task, etc.)
+# - high_priority: Time-sensitive tasks (important_task)
+# - low_priority: Resource-intensive background tasks
+#
+# 🔄 WORKER SPECIALIZATION:
+# - Main Worker: Handles default + high_priority queues (8 processes)
+# - Low Priority Worker: Dedicated to low_priority queue (4 processes)
+#
+# 📊 MONITORING & SCHEDULING:
+# - Flower: Web dashboard at http://localhost:5555
+# - Beat: Manages periodic tasks (every 60s)
+#
+# 🚀 QUICK START:
+# docker-compose --profile mastering_celery up -d
+#
+# 🔧 PERFORMANCE TUNING:
+# - Adjust concurrency based on your CPU cores
+# - Modify prefetch-multiplier for task characteristics
+# - Scale workers: docker-compose up --scale worker=3
+#
+# 📝 TASK ROUTING (configured in app/celery_app.py):
+# - app.tasks.important_task → high_priority queue → main worker
+# - app.tasks.* (others) → default queue → main worker
+# - Future low priority tasks → low_priority queue → low prefetch worker
+#
+# ============================================================================
+
 services:
+  # ========================================================================
+  # REDIS SERVICE - Message Broker & Result Backend
+  # ========================================================================
+  # Redis acts as both:
+  # 1. Message Broker: Stores task queues and routes tasks to workers
+  # 2. Result Backend: Stores task results and status information
+  # Redis is lightweight, fast, and perfect for Celery's needs
+  #
+  # Production Notes:
+  # - Add volumes for data persistence
+  # - Configure memory limits
+  # - Enable authentication (requirepass)
   redis:
     image: redis:latest
     container_name: redis_container
@@ -6,32 +112,74 @@ services:
       - "6379:6379"
     profiles:
       - mastering_celery
-  
-  celery_worker:
+
+  # ========================================================================
+  # MAIN CELERY WORKER - High Performance Multi-Queue Worker
+  # ========================================================================
+  # This is the primary worker that handles most task types
+  # Optimized for throughput with fair task distribution
+  #
+  # Configuration Details:
+  # - concurrency=8: Creates 8 worker processes for parallel execution
+  # - prefetch-multiplier=4: Each worker prefetches 4 tasks (32 total in memory)
+  # - fair: Ensures fair distribution across workers (prevents worker starvation)
+  # - Queues: Processes both default and high_priority queues
+  #
+  # Performance Tuning:
+  # - For CPU-bound tasks: concurrency = CPU cores
+  # - For I/O-bound tasks: concurrency = CPU cores * 2-4
+  # - prefetch-multiplier: Lower for long tasks, higher for short tasks
+  worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: celery_worker_container
+    container_name: celery_worker
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: celery -A app.celery_app.celery_app worker --loglevel=info
-    volumes:
-      - ./app:/app
+    command: >
+      celery -A app.celery_app.celery_app worker 
+      --loglevel=info
+      --concurrency=8
+      --prefetch-multiplier=4
+      -Ofair
+      -Q default,high_priority
     depends_on:
       - redis
+    volumes:
+      - ./app:/app
     profiles:
       - mastering_celery
 
-  fastapi_app:
+  # ========================================================================
+  # FASTAPI APPLICATION SERVER - REST API Gateway
+  # ========================================================================
+  # FastAPI serves as the HTTP interface to your Celery system
+  # Handles task submission and result retrieval via REST endpoints
+  #
+  # Configuration Details:
+  # - host 0.0.0.0: Allows external connections (Docker requirement)
+  # - reload: Development feature - restarts on file changes
+  # - port 8000: Standard FastAPI port
+  #
+  # Production Considerations:
+  # - Remove --reload flag
+  # - Add --workers for multiple processes
+  # - Consider using Gunicorn with Uvicorn workers
+  # - Add health checks and resource limits
+  app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: fastapi_app_container
+    container_name: fastapi_app
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: >
+      uvicorn app.main:app 
+      --host 0.0.0.0
+      --port 8000
+      --reload
     volumes:
       - ./app:/app
     ports:
@@ -41,34 +189,127 @@ services:
     profiles:
       - mastering_celery
 
-  high_priority_worker:
+  # ========================================================================
+  # LOW PRIORITY WORKER - Specialized for Resource-Intensive Tasks
+  # ========================================================================
+  # Dedicated worker for low priority, long-running tasks
+  # Configured with minimal prefetching to prevent resource hoarding
+  #
+  # Strategy:
+  # - concurrency=4: Half the workers of main worker (resource conservation)
+  # - prefetch-multiplier=1: Prevents hoarding of long-running tasks
+  # - Dedicated queue: Isolates heavy tasks from time-sensitive ones
+  #
+  # Use Cases:
+  # - Data processing jobs
+  # - File uploads/downloads
+  # - Report generation
+  # - Batch operations
+  #
+  # Benefits:
+  # - Prevents blocking of high-priority tasks
+  # - Better resource allocation
+  # - Improved system responsiveness
+  worker_lowprefetch:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: high_priority_worker_container
+    container_name: celery_worker_lowprefetch
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q high_priority
+    command: >
+      celery -A app.celery_app.celery_app worker 
+      --loglevel=info
+      --concurrency=4
+      --prefetch-multiplier=1
+      -Q default
+    depends_on:
+      - redis
     volumes:
       - ./app:/app
     profiles:
       - mastering_celery
-    depends_on:
-      - redis
+
+  # ========================================================================
+  # CELERY BEAT SCHEDULER - Periodic Task Manager
+  # ========================================================================
+  # Celery Beat is responsible for scheduling and triggering periodic tasks
+  # Acts like a cron daemon for your Celery system
+  #
+  # How it Works:
+  # - Reads beat_schedule from celery_app.py configuration
+  # - Sends tasks to appropriate queues at scheduled intervals
+  # - Does NOT execute tasks (workers do that)
+  # - Maintains schedule state in Redis
+  #
+  # Current Schedule (from celery_app.py):
+  # - scheduled_task: Runs every 60 seconds
 
   beat:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: beat_container
+    container_name: celery_beat
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: celery -A app.celery_app.celery_app beat --loglevel=info
-    volumes:
-      - ./app:/app
+    command: >
+      celery -A app.celery_app.celery_app beat 
+      --loglevel=info
     depends_on:
       - redis
+    volumes:
+      - ./app:/app
+    profiles:
+      - mastering_celery
+
+  # ========================================================================
+  # FLOWER - Web-Based Celery Monitoring Dashboard
+  # ========================================================================
+  # Flower provides real-time monitoring and management of Celery workers
+  # Essential tool for production monitoring and debugging
+  #
+  # Features:
+  # - Real-time worker monitoring
+  # - Task history and statistics
+  # - Queue length monitoring
+  # - Worker resource usage
+  # - Task routing visualization
+  # - Manual task execution
+  # - Worker pool management
+  #
+  # Access:
+  # - Web Interface: http://localhost:5555
+  # - No authentication by default (add in production)
+  #
+  # Monitoring Capabilities:
+  # - Active/offline workers
+  # - Task success/failure rates
+  # - Queue backlogs
+  # - Processing times
+  # - Memory/CPU usage per worker
+  #
+  # Production Setup:
+  # - Add authentication (--basic_auth=user:password)
+  # - Configure SSL/TLS
+  # - Set up alerts for critical metrics
+  # - Consider resource limits
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flower
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    command: >
+      celery -A app.celery_app.celery_app flower
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    volumes:
+      - ./app:/app
     profiles:
       - mastering_celery

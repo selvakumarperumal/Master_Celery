@@ -36,3 +36,18 @@ def long_running_task():
     """Example of a task with a long-running operation."""
     time.sleep(30)  # Simulate a long-running task
     return "Long-running task completed"
+
+# Wokrload variety for tuning Celery
+@celery_app.task
+def cpu_burn(n: int = 5_000_00):
+    """Simple cpu bound loop to burn CPU cycles."""
+    s = 0
+    for i in range(n):
+        s += i
+    return s
+
+@celery_app.task
+def io_bound_task(ms: int = 200):
+    """Example of an I/O bound task."""
+    time.sleep(ms / 1000)
+    return f"IO bound task completed after {ms} ms"

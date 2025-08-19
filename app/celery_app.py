@@ -19,11 +19,13 @@ celery_app.conf.update(
     timezone='UTC',
     enable_utc=True,
     task_routes={
-        "app.tasks.add": {"queue": "celery"},
-        "app.tasks.failing_task": {"queue": "celery"},
+        "app.tasks.add": {"queue": "default"},  # Default queue
+        "app.tasks.failing_task": {"queue": "default"},
         "app.tasks.important_task": {"queue": "high_priority"},
-        "app.tasks.long_running_task": {"queue": "celery"},
-        "app.tasks.scheduled_task": {"queue": "celery"},
+        "app.tasks.long_running_task": {"queue": "default"},
+        "app.tasks.scheduled_task": {"queue": "default"},
+        "app.tasks.cpu_burn": {"queue": "default"},
+        "app.tasks.io_bound_task": {"queue": "default"},
     },
     beat_schedule={
         "scheduled_task": {
@@ -31,6 +33,15 @@ celery_app.conf.update(
             "schedule": 60.0,  # Run every 60 seconds
         },
     },
+
+    task_soft_time_limit=30,  # Soft time limit for tasks
+    task_time_limit=60,  # Hard time limit for tasks
+
+    result_expires=3600,  # Results expire after 1 hour
+    result_persistent=False,  # Store results persistently
+    result_accept_content=['json'],  # Accept only JSON content
+
+    worker_prefetch_multiplier=4,  # Prefetch multiplier for workers
 )
 
 # Import tasks to register them with Celery
