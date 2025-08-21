@@ -180,6 +180,7 @@ services:
       --host 0.0.0.0
       --port 8000
       --reload
+      --reload-dir /app
     volumes:
       - ./app:/app
     ports:
@@ -246,23 +247,23 @@ services:
   # Current Schedule (from celery_app.py):
   # - scheduled_task: Runs every 60 seconds
 
-  beat:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: celery_beat
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: >
-      celery -A app.celery_app.celery_app beat 
-      --loglevel=info
-    depends_on:
-      - redis
-    volumes:
-      - ./app:/app
-    profiles:
-      - mastering_celery
+  # beat:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: celery_beat
+  #   environment:
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #     - CELERY_RESULT_BACKEND=redis://redis:6379/0
+  #   command: >
+  #     celery -A app.celery_app.celery_app beat 
+  #     --loglevel=info
+  #   depends_on:
+  #     - redis
+  #   volumes:
+  #     - ./app:/app
+  #   profiles:
+  #     - mastering_celery
 
   # ========================================================================
   # FLOWER - Web-Based Celery Monitoring Dashboard

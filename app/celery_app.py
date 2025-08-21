@@ -26,13 +26,20 @@ celery_app.conf.update(
         "app.tasks.scheduled_task": {"queue": "default"},
         "app.tasks.cpu_burn": {"queue": "default"},
         "app.tasks.io_bound_task": {"queue": "default"},
+        "app.tasks.multiply": {"queue": "default"},
+        "app.tasks.summarize": {"queue": "default"},
+        "app.tasks.run_chain": {"queue": "default"},
+        "app.tasks.run_chord": {"queue": "default"},
+        "app.tasks.run_group": {"queue": "default"},
+        "app.tasks.limited_task": {"queue": "default"}
+
     },
-    beat_schedule={
-        "scheduled_task": {
-            "task": "app.tasks.scheduled_task",
-            "schedule": 60.0,  # Run every 60 seconds
-        },
-    },
+    # beat_schedule={
+    #     "scheduled_task": {
+    #         "task": "app.tasks.scheduled_task",
+    #         "schedule": 60.0,  # Run every 60 seconds
+    #     },
+    # },
 
     task_soft_time_limit=30,  # Soft time limit for tasks
     task_time_limit=60,  # Hard time limit for tasks
